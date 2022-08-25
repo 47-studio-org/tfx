@@ -572,3 +572,45 @@ class PipelineInputChannel(BaseChannel):
   @pipeline.setter
   def pipeline(self, pipeline: Any):
     self._pipeline = pipeline
+
+
+class ExternalProjectQueryChannel(Channel):
+  """Channel subtype that is used for node.outputs."""
+
+  def __init__(self,
+               artifact_type: Type[Artifact],
+               *,
+               owner: str,
+               name: str,
+               pipeline_name: str,
+               producer_component_id: str,
+               output_key: str = '',
+               mlmd_service_target: Optional[str] = None):
+    """Initialization of ExternalProjectQueryChannel.
+
+    Args:
+      artifact_type: Subclass of Artifact for this channel.
+      owner: Onwer of the MLMD db.
+      name: Name of the MLMD db.
+      pipeline_name: Name of the pipeline the artifacts belong to.
+      producer_component_id: Id of the component produced the artifacts.
+      output_key: The output key when producer component produces the artifacts
+        in this Channel.
+      mlmd_service_target: (Optional) Service target of the MLMD db.
+    """
+    super().__init__(type=artifact_type, output_key=output_key)
+    self.owner = owner
+    self.name = name
+    self.mlmd_service_target = mlmd_service_target
+
+    self.pipeline_name = pipeline_name
+    self.producer_component_id = producer_component_id
+
+  def __repr__(self) -> str:
+    return (f'{self.__class__.__name__}('
+            f'owner={self.owner}, '
+            f'name={self.name}, '
+            f'mlmd_service_target={self.mlmd_service_target}, '
+            f'pipeline_name={self.pipeline_name}, '
+            f'producer_component_id={self.producer_component_id}, '
+            f'output_key={self.output_key}.)')

@@ -286,6 +286,16 @@ message InputSpec {
       // Predicate on the artifact properties.
       PropertyPredicate property_predicate = 2;
     }
+    // Information about the MLMD db.
+    message MLMDServiceConfig {
+      // Owner of the MLMD db.
+      string owner = 1;
+      // Name of the MLMD db.
+      string name = 2;
+      // MLMD service target.
+      string mlmd_service_target = 3;
+    }
+
     ProducerNodeQuery producer_node_query = 1;
     repeated ContextQuery context_queries = 2;
     ArtifactQuery artifact_query = 3;
@@ -298,6 +308,8 @@ message InputSpec {
     // where 'some_output_key' is the output key for the channel that evaluator
     // uses as one of its input.
     string output_key = 4;
+
+    google.protobuf.Any channel_metadata_connection_config = 5;
   }
 
   // Reference to the InputGraph result.

@@ -13,12 +13,13 @@
 # limitations under the License.
 """TFX Channel utilities."""
 
-from typing import cast, Dict, Iterable, List
+from typing import cast, Dict, Iterable, List, Optional, Type
 
 from tfx.dsl.input_resolution import resolver_function
 from tfx.types import artifact
 from tfx.types import channel
 from tfx.types import resolved_channel
+from tfx.types.artifact import Artifact
 
 
 def as_channel(artifacts: Iterable[artifact.Artifact]) -> channel.Channel:
@@ -62,6 +63,8 @@ def get_individual_channels(
   """Converts BaseChannel into a list of Channels."""
   if isinstance(input_channel, channel.Channel):
     return [input_channel]
+  elif isinstance(input_channel, channel.ExternalProjectQueryChannel):
+    return [input_channel]
   elif isinstance(input_channel, channel.UnionChannel):
     return list(cast(channel.UnionChannel, input_channel).channels)
   elif isinstance(input_channel, channel.LoopVarChannel):
@@ -79,6 +82,10 @@ def get_dependent_node_ids(channel_: channel.BaseChannel) -> Iterable[str]:
   # pytype: disable=attribute-error
   if isinstance(channel_, channel.OutputChannel):
     yield channel_.producer_component_id
+  elif isinstance(channel_, channel.ExternalProjectQueryChannel):
+    # TODO(b/240720905) the component may be from the same project or from
+    # another project. We need to distiguash these two cases.
+    return
   elif isinstance(channel_, channel.PipelineInputChannel):
     yield channel_.pipeline.id
   elif isinstance(channel_, channel.Channel):
@@ -97,3 +104,39 @@ def get_dependent_node_ids(channel_: channel.BaseChannel) -> Iterable[str]:
       yield from get_dependent_node_ids(each_channel)
   else:
     raise TypeError(f'Invalid channel type {type(channel_)}')
+
+
+def external_project_artifact_query(
+    artifact_type: Type[Artifact],
+    *,
+    owner: str,
+    project_name: str,
+    pipeline_name: str,
+    producer_component_id: str,
+    output_key: str,
+    mlmd_service_target: Optional[str] = None
+) -> channel.ExternalProjectQueryChannel:
+  """Helper function to construct a query to get artifacts from an MLMD db.
+
+  Args:
+    artifact_type: Subclass of Artifact for this channel.
+    owner: Onwer of the MLMD db.
+    project_name: Name of the project.
+    pipeline_name: Name of the pipeline the artifacts belong to.
+    producer_component_id: Id of the component produced the artifacts.
+    output_key: The output key when producer component produces the artifacts in
+      this Channel.
+    mlmd_service_target: (Optional) Service target of the MLMD db.
+
+  Returns:
+    channel.ExternalProjectQueryChannel instance.
+  """
+  return channel.ExternalProjectQueryChannel(
+      artifact_type=artifact_type,
+      owner=owner,
+      name=project_name,
+      pipeline_name=pipeline_name,
+      producer_component_id=producer_component_id,
+      output_key=output_key,
+      mlmd_service_target=mlmd_service_target,
+  )
