@@ -387,7 +387,9 @@ def _verify_exec_node_task(test_case, pipeline, node, execution_id, task,
   if pipeline.execution_mode == pipeline_pb2.Pipeline.SYNC:
     expected_context_names.append(
         pipeline.runtime_spec.pipeline_run_id.field_value.string_value)
-  expected_input_artifacts_keys = list(iter(node.inputs.inputs.keys()))
+  expected_input_artifacts_keys = [
+      key for key in node.inputs.inputs.keys()
+      if not node.inputs.inputs[key].hidden]
   expected_output_artifacts_keys = list(iter(node.outputs.outputs.keys()))
   if expected_output_artifacts_keys:
     output_artifact_uri = os.path.join(
