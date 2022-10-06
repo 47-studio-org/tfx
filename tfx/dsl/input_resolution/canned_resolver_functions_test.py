@@ -13,7 +13,7 @@
 # limitations under the License.
 """Tests for tfx.dsl.input_resolution.canned_resolver_functions."""
 
-from typing import Dict
+from typing import Dict, Sequence
 
 import tensorflow as tf
 
@@ -21,6 +21,7 @@ from tfx import types
 from tfx.dsl.compiler import compiler_context
 from tfx.dsl.compiler import node_inputs_compiler
 from tfx.dsl.components.base import base_node
+from tfx.dsl.control_flow import for_each
 from tfx.dsl.input_resolution import canned_resolver_functions
 from tfx.dsl.input_resolution.ops import test_utils
 from tfx.orchestration import pipeline
@@ -59,10 +60,14 @@ class DummyNode(base_node.BaseNode):
     return self._outputs
 
 
-def _compile_inputs(
-    inputs: Dict[str, channel_types.BaseChannel]) -> pipeline_pb2.PipelineNode:
+def _compile_inputs(inputs: Dict[str, channel_types.BaseChannel],
+                    use_for_each: bool = False) -> pipeline_pb2.PipelineNode:
   """Returns a compiled PipelineNode from the DummyNode inputs dictionary."""
-  node = DummyNode('MyNode', inputs=inputs)
+  if use_for_each:
+    with for_each.ForEach(inputs) as each_input:
+      node = DummyNode('MyNode', inputs=each_input)
+  else:
+    node = DummyNode('MyNode', inputs=inputs)
   p = pipeline.Pipeline(pipeline_name='pipeline', components=[node])
   ctx = compiler_context.PipelineContext(p)
   node_inputs = pipeline_pb2.NodeInputs()
@@ -95,6 +100,31 @@ class CannedResolverFunctionsTest(
                        resolved_artifact.properties['span'])
       self.assertEqual(mlmd_artifact.properties['version'],
                        resolved_artifact.properties['version'])
+
+  def _insert_artifacts_into_mlmd(
+      self, spans: Sequence[int],
+      versions: Sequence[int]) -> Sequence[metadata_store_pb2.Artifact]:
+    """Inserts artifacts with the given spans and versions into MLMD."""
+    mlmd_context = self.put_context('pipeline', 'pipeline')
+
+    mlmd_artifacts = []
+    for span, version in zip(spans, versions):
+      mlmd_artifacts.append(
+          self.put_artifact(
+              artifact_type='DummyArtifact',
+              properties={
+                  'span': span,
+                  'version': version
+              }))
+
+    for mlmd_artifact in mlmd_artifacts:
+      self.put_execution(
+          'ProducerNode',
+          inputs={},
+          outputs={'x': [mlmd_artifact]},
+          contexts=[mlmd_context])
+
+    return mlmd_artifacts
 
   def assertArtifactListEqual(self,
                               resolved_artifacts: metadata_store_pb2.Artifact,
@@ -144,26 +174,9 @@ class CannedResolverFunctionsTest(
         exclude_span_numbers=[2])
     pipeline_node = _compile_inputs({'x': channel})
 
-    mlmd_context = self.put_context('pipeline', 'pipeline')
-
     spans = [0, 1, 2, 3, 3, 5, 7, 10]
     versions = [0, 0, 0, 0, 3, 0, 0, 0]
-    mlmd_artifacts = []
-    for span, version in zip(spans, versions):
-      mlmd_artifacts.append(
-          self.put_artifact(
-              artifact_type='DummyArtifact',
-              properties={
-                  'span': span,
-                  'version': version
-              }))
-
-    for mlmd_artifact in mlmd_artifacts:
-      self.put_execution(
-          'ProducerNode',
-          inputs={},
-          outputs={'x': [mlmd_artifact]},
-          contexts=[mlmd_context])
+    mlmd_artifacts = self._insert_artifacts_into_mlmd(spans, versions)
 
     resolved = inputs_utils.resolve_input_artifacts(
         pipeline_node=pipeline_node, metadata_handler=self.mlmd_handler)
@@ -176,6 +189,79 @@ class CannedResolverFunctionsTest(
     self.assertArtifactListEqual(
         actual_artifacts, expected_artifacts, check_span_and_version=True)
 
+  def testRollingRangeResolverFn_E2E(self):
+    channel = canned_resolver_functions.rolling_range(
+        types.Channel(test_utils.DummyArtifact, output_key='x'),
+        start_span_number=3,
+        num_spans=2,
+        skip_num_recent_spans=1,
+        keep_all_versions=True)
+    pipeline_node = _compile_inputs({'x': channel})
+
+    spans = [1, 2, 3, 3, 7, 8]
+    versions = [0, 0, 1, 0, 1, 2]
+    mlmd_artifacts = self._insert_artifacts_into_mlmd(spans, versions)
+
+    resolved = inputs_utils.resolve_input_artifacts(
+        pipeline_node=pipeline_node, metadata_handler=self.mlmd_handler)
+    self.assertIsInstance(resolved, inputs_utils.Trigger)
+
+    # The resolved artifacts should have (span, version) tuples of:
+    # [(7, 1), (3, 0), (3, 1)].
+    actual_artifacts = [r.mlmd_artifact for r in resolved[0]['x']]
+    expected_artifacts = [mlmd_artifacts[i] for i in [4, 3, 2]]
+    self.assertArtifactListEqual(
+        actual_artifacts, expected_artifacts, check_span_and_version=True)
+
+  def testSequentialRollingRangeResolverFn_E2E(self):
+    output_type = {'window': test_utils.DummyArtifact}
+    loopable = (
+        canned_resolver_functions.sequential_rolling_range.with_output_type(
+            output_type)(
+                types.Channel(test_utils.DummyArtifact, output_key='x'),
+                start_span_number=1,
+                num_spans=3,
+                skip_num_recent_spans=1,
+                keep_all_versions=False))
+    pipeline_node = _compile_inputs(loopable, use_for_each=True)
+
+    spans = [1, 2, 3, 3, 4, 7]
+    versions = [0, 0, 1, 0, 0, 0]
+    mlmd_artifacts = self._insert_artifacts_into_mlmd(spans, versions)
+
+    resolved = inputs_utils.resolve_input_artifacts(
+        pipeline_node=pipeline_node, metadata_handler=self.mlmd_handler)
+    self.assertIsInstance(resolved, inputs_utils.Trigger)
+
+    # The resolved artifacts should have (span, version) tuples of:
+    # [(1, 0), (2, 0), (3, 1)], [(2, 0), (3, 1), (4,0)].
+    for i, artifact_dict in enumerate(resolved):
+      actual_artifacts = [r.mlmd_artifact for r in artifact_dict['window']]
+      expected_artifacts = mlmd_artifacts[i:i + 3]
+      self.assertArtifactListEqual(
+          actual_artifacts, expected_artifacts, check_span_and_version=True)
+
+  def testSequentialRollingRangeResolverFn_E2E_SkipSignalRaised(self):
+    # The range to consider will be [1, 11), but the artifacts will only have
+    # consecutive spans from [1, 5], so a skip signal will be raised.
+    output_type = {'window': test_utils.DummyArtifact}
+    loopable = (
+        canned_resolver_functions.sequential_rolling_range.with_output_type(
+            output_type)(
+                types.Channel(test_utils.DummyArtifact, output_key='x'),
+                start_span_number=1,
+                num_spans=10,
+                skip_num_recent_spans=0,
+                keep_all_versions=False))
+    pipeline_node = _compile_inputs(loopable, use_for_each=True)
+
+    spans = [1, 2, 3, 3, 4, 5]
+    versions = [0, 0, 1, 0, 0, 0]
+    _ = self._insert_artifacts_into_mlmd(spans, versions)
+
+    resolved = inputs_utils.resolve_input_artifacts(
+        pipeline_node=pipeline_node, metadata_handler=self.mlmd_handler)
+    self.assertIsInstance(resolved, inputs_utils.Skip)
 
 if __name__ == '__main__':
   tf.test.main()

@@ -191,6 +191,8 @@ def _reduce_graph_fn(ctx: _Context, node_id: str, graph_fn: _GraphFn):
       output = node_fn(data)
     except exceptions.InputResolutionError:
       raise
+    except exceptions.SkipSignal:
+      raise
     except Exception as e:  # pylint: disable=broad-except
       raise exceptions.InternalError(
           'Internal error occurred during evaluating input_graph.nodes['
