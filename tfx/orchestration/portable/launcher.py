@@ -25,6 +25,7 @@ from tfx import types
 from tfx.dsl.io import fileio
 from tfx.orchestration import data_types_utils
 from tfx.orchestration import metadata
+from tfx.orchestration import mlmd_connection_manager as mlmd_cm
 from tfx.orchestration.portable import base_driver_operator
 from tfx.orchestration.portable import base_executor_operator
 from tfx.orchestration.portable import beam_executor_operator
@@ -258,9 +259,12 @@ class Launcher:
               node_parameters=self._pipeline_node.parameters))
 
       try:
+        mlmd_connection_manager = mlmd_cm.MLMDConnectionManager(
+            primary_mlmd_handle=m,
+            primary_mlmd_handle_config=mlmd_cm.MLMDConnectionConfig())
         resolved_inputs = inputs_utils.resolve_input_artifacts(
             pipeline_node=self._pipeline_node,
-            metadata_handler=m)
+            mlmd_connection_manager=mlmd_connection_manager)
         logging.info('[%s] Resolved inputs: %s',
                      self._pipeline_node.node_info.id, resolved_inputs)
       except exceptions.InputResolutionError as e:
