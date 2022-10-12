@@ -13,11 +13,10 @@
 # limitations under the License.
 """Base class for TFX Beam components."""
 
-from typing import Iterable, cast, Union
+from typing import Iterable, cast
 
 from tfx.dsl.components.base import base_component
 from tfx.dsl.components.base import executor_spec
-from tfx.dsl.placeholder import placeholder
 
 
 class BaseBeamComponent(base_component.BaseComponent):
@@ -33,8 +32,7 @@ class BaseBeamComponent(base_component.BaseComponent):
   """
 
   def with_beam_pipeline_args(
-      self, beam_pipeline_args: Iterable[Union[str, placeholder.Placeholder]]
-  ) -> 'BaseBeamComponent':
+      self, beam_pipeline_args: Iterable[str]) -> 'BaseBeamComponent':
     """Add per component Beam pipeline args.
 
     Args:
