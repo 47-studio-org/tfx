@@ -487,7 +487,8 @@ def _load_reused_pipeline_view(
   if snapshot_settings.HasField('base_pipeline_run_strategy'):
     base_run_id = snapshot_settings.base_pipeline_run_strategy.base_run_id
   try:
-    reused_pipeline_view = pstate.PipelineView.load(mlmd_handle, pipeline_uid,
+    reused_pipeline_view = pstate.PipelineView.load(mlmd_handle,
+                                                    pipeline_uid.pipeline_id,
                                                     base_run_id)
   except status_lib.StatusNotOkError as e:
     if e.code == status_lib.Code.NOT_FOUND:
@@ -639,7 +640,7 @@ def orchestrate(mlmd_handle: metadata.Metadata, task_queue: tq.TaskQueue,
   Raises:
     status_lib.StatusNotOkError: If error generating tasks.
   """
-  pipeline_states = pstate.get_pipeline_states(mlmd_handle)
+  pipeline_states = pstate.PipelineState.load_all_active(mlmd_handle)
   if not pipeline_states:
     logging.info('No active pipelines to run.')
     return False

@@ -392,10 +392,23 @@ class PipelineState:
     context = context_lib.register_context_if_not_exists(
         mlmd_handle,
         context_type_name=_ORCHESTRATOR_RESERVED_ID,
-        context_name=orchestrator_context_name(pipeline_uid))
+        context_name=pipeline_uid.pipeline_id)
 
     executions = mlmd_handle.store.get_executions_by_context(context.id)
-    if any(e for e in executions if execution_lib.is_execution_active(e)):
+
+    def _any_active_pipeline_with_uid(
+        executions: List[metadata_store_pb2.Execution],
+        pipeline_uid: task_lib.PipelineUid) -> bool:
+      if pipeline_uid.pipeline_run_id is None:
+        return any(
+            e for e in executions if execution_lib.is_execution_active(e))
+      else:
+        return any(
+            e for e in executions if execution_lib.is_execution_active(e) and
+            _get_metadata_value(e.custom_properties.get(
+                _PIPELINE_RUN_ID)) == pipeline_uid.pipeline_run_id)
+
+    if _any_active_pipeline_with_uid(executions, pipeline_uid):
       raise status_lib.StatusNotOkError(
           code=status_lib.Code.ALREADY_EXISTS,
           message=f'Pipeline with uid {pipeline_uid} already active.')
@@ -455,36 +468,91 @@ class PipelineState:
       with the given pipeline uid exists in MLMD. With code=INTERNAL if more
       than 1 active execution exists for given pipeline uid.
     """
-    context = _get_orchestrator_context(mlmd_handle, pipeline_uid)
-    return cls.load_from_orchestrator_context(mlmd_handle, context)
+    context = _get_orchestrator_context(mlmd_handle, pipeline_uid.pipeline_id)
+    uids_and_states = cls._load_from_context(mlmd_handle, context, pipeline_uid)
+    if not uids_and_states:
+      raise status_lib.StatusNotOkError(
+          code=status_lib.Code.NOT_FOUND,
+          message=f'No active pipeline with uid {pipeline_uid} to load state.')
+    if len(uids_and_states) > 1:
+      raise status_lib.StatusNotOkError(
+          code=status_lib.Code.INTERNAL,
+          message=(
+              f'Expected 1 but found {len(uids_and_states)} active pipelines '
+              f'for pipeline uid: {pipeline_uid}'))
+    return uids_and_states[0][1]
 
   @classmethod
-  def load_from_orchestrator_context(
-      cls, mlmd_handle: metadata.Metadata,
-      context: metadata_store_pb2.Context) -> 'PipelineState':
-    """Loads pipeline state for active pipeline under given orchestrator context.
+  def load_all_active(cls,
+                      mlmd_handle: metadata.Metadata) -> List['PipelineState']:
+    """Loads all active pipeline states.
 
     Args:
       mlmd_handle: A handle to the MLMD db.
-      context: Pipeline context under which to find the pipeline execution.
 
     Returns:
-      A `PipelineState` object.
+      List of `PipelineState` objects for all active pipelines.
 
     Raises:
-      status_lib.StatusNotOkError: With code=NOT_FOUND if no active pipeline
-      exists for the given context in MLMD. With code=INTERNAL if more than 1
-      active execution exists for given pipeline uid.
+      status_lib.StatusNotOkError: With code=INTERNAL if more than one active
+      pipeline are found with the same pipeline uid.
     """
-    pipeline_uid = pipeline_uid_from_orchestrator_context(context)
-    active_execution = _get_active_execution(
-        pipeline_uid, mlmd_handle.store.get_executions_by_context(context.id))
-    pipeline = _get_pipeline_from_orchestrator_execution(active_execution)
+    contexts = get_orchestrator_contexts(mlmd_handle)
+    active_pipeline_uids = set()
+    result = []
+    for context in contexts:
+      uids_and_states = cls._load_from_context(mlmd_handle, context)
+      for pipeline_uid, pipeline_state in uids_and_states:
+        if pipeline_uid in active_pipeline_uids:
+          raise status_lib.StatusNotOkError(
+              code=status_lib.Code.INTERNAL,
+              message=(
+                  f'Found more than 1 active pipeline for pipeline uid: {pipeline_uid}'
+              ))
+        active_pipeline_uids.add(pipeline_uid)
+        result.append(pipeline_state)
+    return result
 
-    return cls(
-        mlmd_handle=mlmd_handle,
-        pipeline=pipeline,
-        execution_id=active_execution.id)
+  @classmethod
+  def _load_from_context(
+      cls,
+      mlmd_handle: metadata.Metadata,
+      context: metadata_store_pb2.Context,
+      matching_pipeline_uid: Optional[task_lib.PipelineUid] = None
+  ) -> List[Tuple[task_lib.PipelineUid, 'PipelineState']]:
+    """Loads active pipeline states associated with given orchestrator context.
+
+    Args:
+      mlmd_handle: A handle to the MLMD db.
+      context: Orchestrator context.
+      matching_pipeline_uid: If provided, returns only pipeline with matching
+        pipeline_uid.
+
+    Returns:
+      List of active pipeline states.
+    """
+    concurrent_runs_enabled = env.get_env().concurrent_pipeline_runs_enabled()
+    pipeline_id = pipeline_id_from_orchestrator_context(context)
+    # TODO(b/254578300): Use filter_query and load only the relevant executions.
+    executions = mlmd_handle.store.get_executions_by_context(context.id)
+    active_executions = [
+        e for e in executions if execution_lib.is_execution_active(e)
+    ]
+    result = []
+    for execution in active_executions:
+      # If concurrent runs are not enabled, pipeline_run_id is not part of the
+      # PipelineUid.
+      pipeline_uid = task_lib.PipelineUid(
+          pipeline_id=pipeline_id,
+          pipeline_run_id=_get_metadata_value(
+              execution.custom_properties.get(_PIPELINE_RUN_ID))
+          if concurrent_runs_enabled else None)
+      if matching_pipeline_uid and pipeline_uid != matching_pipeline_uid:
+        continue
+      pipeline = _get_pipeline_from_orchestrator_execution(execution)
+      result.append(
+          (pipeline_uid, PipelineState(mlmd_handle, pipeline, execution.id)))
+    return result
 
   @property
   def pipeline_uid(self) -> task_lib.PipelineUid:
@@ -753,23 +821,21 @@ class PipelineState:
 class PipelineView:
   """Class for reading active or inactive pipeline view."""
 
-  def __init__(self, pipeline_uid: task_lib.PipelineUid,
-               context: metadata_store_pb2.Context,
+  def __init__(self, pipeline_id: str, context: metadata_store_pb2.Context,
                execution: metadata_store_pb2.Execution):
-    self.pipeline_uid = pipeline_uid
+    self.pipeline_id = pipeline_id
     self.context = context
     self.execution = execution
     self._pipeline = None  # lazily set
 
   @classmethod
-  def load_all(cls, mlmd_handle: metadata.Metadata,
-               pipeline_uid: task_lib.PipelineUid,
+  def load_all(cls, mlmd_handle: metadata.Metadata, pipeline_id: str,
                **kwargs) -> List['PipelineView']:
     """Loads all pipeline views from MLMD.
 
     Args:
       mlmd_handle: A handle to the MLMD db.
-      pipeline_uid: Uid of the pipeline state to load.
+      pipeline_id: Id of the pipeline state to load.
       **kwargs: Extra option to pass into mlmd store functions.
 
     Returns:
@@ -779,24 +845,24 @@ class PipelineView:
       status_lib.StatusNotOkError: With code=NOT_FOUND if no pipeline
       with the given pipeline uid exists in MLMD.
     """
-    context = _get_orchestrator_context(mlmd_handle, pipeline_uid, **kwargs)
+    context = _get_orchestrator_context(mlmd_handle, pipeline_id, **kwargs)
     list_options = mlmd.ListOptions(
         order_by=mlmd.OrderByField.CREATE_TIME, is_asc=True)
     executions = mlmd_handle.store.get_executions_by_context(
         context.id, list_options=list_options, **kwargs)
-    return [cls(pipeline_uid, context, execution) for execution in executions]
+    return [cls(pipeline_id, context, execution) for execution in executions]
 
   @classmethod
   def load(cls,
            mlmd_handle: metadata.Metadata,
-           pipeline_uid: task_lib.PipelineUid,
+           pipeline_id: str,
            pipeline_run_id: Optional[str] = None,
            **kwargs) -> 'PipelineView':
     """Loads pipeline view from MLMD.
 
     Args:
       mlmd_handle: A handle to the MLMD db.
-      pipeline_uid: Uid of the pipeline state to load.
+      pipeline_id: Id of the pipeline state to load.
       pipeline_run_id: Run id of the pipeline for the synchronous pipeline.
       **kwargs: Extra option to pass into mlmd store functions.
 
@@ -809,18 +875,18 @@ class PipelineView:
       than 1 active execution exists for given pipeline uid when pipeline_run_id
       is not specified.
     """
-    context = _get_orchestrator_context(mlmd_handle, pipeline_uid, **kwargs)
+    context = _get_orchestrator_context(mlmd_handle, pipeline_id, **kwargs)
     executions = mlmd_handle.store.get_executions_by_context(
         context.id, **kwargs)
 
     if pipeline_run_id is None and executions:
       execution = _get_latest_execution(executions)
-      return cls(pipeline_uid, context, execution)
+      return cls(pipeline_id, context, execution)
 
     for execution in executions:
       if execution.custom_properties[
           _PIPELINE_RUN_ID].string_value == pipeline_run_id:
-        return cls(pipeline_uid, context, execution)
+        return cls(pipeline_id, context, execution)
     raise status_lib.StatusNotOkError(
         code=status_lib.Code.NOT_FOUND,
         message=f'No pipeline with run_id {pipeline_run_id} found.')
@@ -944,25 +1010,6 @@ class PipelineView:
     return result
 
 
-def get_pipeline_states(mlmd_handle: metadata.Metadata) -> List[PipelineState]:
-  """Scans MLMD and returns pipeline states."""
-  contexts = get_orchestrator_contexts(mlmd_handle)
-  result = []
-  for context in contexts:
-    try:
-      pipeline_state = PipelineState.load_from_orchestrator_context(
-          mlmd_handle, context)
-    except status_lib.StatusNotOkError as e:
-      if e.code == status_lib.Code.NOT_FOUND:
-        # Ignore any old contexts with no associated active pipelines.
-        logging.info(e.message)
-        continue
-      else:
-        raise
-    result.append(pipeline_state)
-  return result
-
-
 def get_orchestrator_contexts(mlmd_handle: metadata.Metadata,
                               **kwargs) -> List[metadata_store_pb2.Context]:
   """Returns all of the orchestrator contexts."""
@@ -970,15 +1017,10 @@ def get_orchestrator_contexts(mlmd_handle: metadata.Metadata,
                                                 **kwargs)
 
 
-def orchestrator_context_name(pipeline_uid: task_lib.PipelineUid) -> str:
-  """Returns orchestrator reserved context name."""
-  return pipeline_uid.pipeline_id
-
-
-def pipeline_uid_from_orchestrator_context(
-    context: metadata_store_pb2.Context) -> task_lib.PipelineUid:
-  """Returns pipeline uid from orchestrator reserved context."""
-  return task_lib.PipelineUid(context.name)
+def pipeline_id_from_orchestrator_context(
+    context: metadata_store_pb2.Context) -> str:
+  """Returns pipeline id from orchestrator reserved context."""
+  return context.name
 
 
 def get_all_nodes(
@@ -1056,27 +1098,6 @@ def _get_pipeline_from_orchestrator_execution(
   return _PipelineIRCodec.get().decode(pipeline_ir)
 
 
-def _get_active_execution(
-    pipeline_uid: task_lib.PipelineUid,
-    executions: List[metadata_store_pb2.Execution]
-) -> metadata_store_pb2.Execution:
-  """gets a single active execution from the executions."""
-  active_executions = [
-      e for e in executions if execution_lib.is_execution_active(e)
-  ]
-  if not active_executions:
-    raise status_lib.StatusNotOkError(
-        code=status_lib.Code.NOT_FOUND,
-        message=f'No active pipeline with uid {pipeline_uid} to load state.')
-  if len(active_executions) > 1:
-    raise status_lib.StatusNotOkError(
-        code=status_lib.Code.INTERNAL,
-        message=(
-            f'Expected 1 but found {len(active_executions)} active pipeline '
-            f'executions for pipeline uid: {pipeline_uid}'))
-  return active_executions[0]
-
-
 def _get_latest_execution(
     executions: List[metadata_store_pb2.Execution]
 ) -> metadata_store_pb2.Execution:
@@ -1088,18 +1109,15 @@ def _get_latest_execution(
   return max(executions, key=_get_creation_time)
 
 
-def _get_orchestrator_context(mlmd_handle: metadata.Metadata,
-                              pipeline_uid: task_lib.PipelineUid,
+def _get_orchestrator_context(mlmd_handle: metadata.Metadata, pipeline_id: str,
                               **kwargs) -> metadata_store_pb2.Context:
   """Returns the orchestrator context of a particular pipeline."""
   context = mlmd_handle.store.get_context_by_type_and_name(
-      type_name=_ORCHESTRATOR_RESERVED_ID,
-      context_name=orchestrator_context_name(pipeline_uid),
-      **kwargs)
+      type_name=_ORCHESTRATOR_RESERVED_ID, context_name=pipeline_id, **kwargs)
   if not context:
     raise status_lib.StatusNotOkError(
         code=status_lib.Code.NOT_FOUND,
-        message=f'No pipeline with uid {pipeline_uid} found.')
+        message=f'No pipeline with id {pipeline_id} found.')
   return context
 
 
