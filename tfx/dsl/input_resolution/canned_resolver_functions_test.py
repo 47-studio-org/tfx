@@ -66,8 +66,6 @@ def _compile_inputs(
   p = pipeline.Pipeline(pipeline_name='pipeline', components=[node])
   ctx = compiler_context.PipelineContext(p)
   node_inputs = pipeline_pb2.NodeInputs()
-
-  # Compile the NodeInputs and wrap in a PipelineNode.
   node_inputs_compiler.compile_node_inputs(ctx, node, node_inputs)
   return pipeline_pb2.PipelineNode(inputs=node_inputs)
 
@@ -207,6 +205,16 @@ class CannedResolverFunctionsTest(
     expected_artifacts = [mlmd_artifacts[i] for i in [4, 3, 2]]
     self.assertArtifactListEqual(
         actual_artifacts, expected_artifacts, check_span_and_version=True)
+
+  def testLatestPipelineRunResolverFn_E2E(self):
+    producer = pipeline.Pipeline(
+        outputs={'x': types.Channel(test_utils.DummyArtifact, output_key='x')},
+        pipeline_name='producer-pipeline')
+    resolver = canned_resolver_functions.latest_pipeline_run(pipeline=producer)
+
+    self.assertIsInstance(resolver['x'], types.resolved_channel.ResolvedChannel)
+    self.assertEqual('producer-pipeline',
+                     resolver['x'].output_node.kwargs['pipeline_name'])
 
 if __name__ == '__main__':
   tf.test.main()
