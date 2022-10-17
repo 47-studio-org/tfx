@@ -78,8 +78,7 @@ class ResolverFunction:
       self, f: Callable[..., resolver_op.Node],
       *,
       output_type: Optional[_TypeHint] = None,
-      output_type_inferrer: _TypeInferrer = _default_type_inferrer,
-      unwrap_dict_key: Optional[str] = None):
+      output_type_inferrer: _TypeInferrer = _default_type_inferrer):
     """Constructor.
 
     Args:
@@ -91,10 +90,6 @@ class ResolverFunction:
           same arguments as the resolver function and returns the output_type.
           If not given, default inferrer (which mirrors the args[0] type) would
           be used.
-      unwrap_dict_key: If the resolver function returns ARTIFACT_MULTIMAP_LIST,
-          resolver function can optionally specify unwrap_dict_key so that the
-          returning Loopable is an unwrapped channel instead of a dict of
-          channels. This key must be be the valid string key of the output_type.
     """
     self._function = f
     self._output_type = output_type
@@ -103,7 +98,6 @@ class ResolverFunction:
       raise ValueError(
           f'Invalid output_type: {output_type}, should be {_TypeHint}.')
     self._output_type_inferrer = output_type_inferrer
-    self._unwrap_dict_key = unwrap_dict_key
 
   def with_output_type(self, output_type: _TypeHint):
     """Statically set output type of the resolver function.
@@ -218,20 +212,13 @@ class ResolverFunction:
       if not typing_utils.is_compatible(output_type, _ArtifactTypeMap):
         raise RuntimeError(
             f'Invalid output_type {output_type}. Expected {_ArtifactTypeMap}')
-      if self._unwrap_dict_key and self._unwrap_dict_key not in output_type:
-        raise RuntimeError(
-            f'unwrap_dict_key {self._unwrap_dict_key} does not exist in the '
-            f'output type keys: {list(output_type)}.')
 
       def loop_var_factory(context: for_each_internal.ForEachContext):
-        result = {
+        return {
             key: resolved_channel.ResolvedChannel(
                 artifact_type, out, key, context)
             for key, artifact_type in output_type.items()
         }
-        if self._unwrap_dict_key:
-          result = result[self._unwrap_dict_key]
-        return result
 
       return for_each_internal.Loopable(loop_var_factory)
 
@@ -279,16 +266,14 @@ class ResolverFunction:
 
 def resolver_function(
     f: Optional[Callable[..., resolver_op.OpNode]] = None, *,
-    output_type: Optional[_TypeHint] = None,
-    unwrap_dict_key: Optional[str] = None):
+    output_type: Optional[_TypeHint] = None):
   """Decorator for the resolver function."""
-  if f is None:
+  if output_type:
     if not typing_utils.is_compatible(output_type, _TypeHint):
       raise ValueError(
           f'Invalid output_type {output_type}. Expected {_TypeHint}')
     def decorator(f):
-      return ResolverFunction(
-          f, output_type=output_type, unwrap_dict_key=unwrap_dict_key)
+      return ResolverFunction(f, output_type=output_type)
     return decorator
   else:
     return ResolverFunction(f)

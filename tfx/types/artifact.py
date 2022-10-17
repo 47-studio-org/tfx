@@ -15,12 +15,12 @@
 
 import builtins
 import copy
+import enum
 import importlib
 import json
 from typing import Any, Dict, List, Optional, Type, Union
 
 from absl import logging
-from tfx.types import artifact_property
 from tfx.types.system_artifacts import SystemArtifact
 from tfx.utils import doc_controls
 from tfx.utils import json_utils
@@ -31,8 +31,8 @@ from google.protobuf import json_format
 from google.protobuf import message
 from ml_metadata.proto import metadata_store_pb2
 
-Property = artifact_property.Property
-PropertyType = artifact_property.PropertyType
+# TODO(b/241861488): Remove safeguard once fully supported by MLMD
+_ENABLE_PROTO_PROPERTIES = False
 
 
 class ArtifactState:
@@ -60,8 +60,56 @@ DEFAULT_EXAMPLE_SPLITS = ['train', 'eval']
 CUSTOM_PROPERTIES_PREFIX = 'custom:'
 
 
+class PropertyType(enum.Enum):
+  """Type of an artifact property."""
+  # Integer value.
+  INT = 1
+  # Double floating point value.
+  FLOAT = 2
+  # String value.
+  STRING = 3
+  # JSON value: a dictionary, list, string, floating point or boolean value.
+  # When possible, prefer use of INT, FLOAT or STRING instead, since JSON_VALUE
+  # type values may not be directly used in MLMD queries.
+  # Note: when a dictionary value is used, the top-level "__value__" key is
+  # reserved.
+  JSON_VALUE = 4
+  # TODO(b/241861488): Update comment once proto property is fully supported
+  # Protocol buffer. (NOT YET SUPPORTED)
+  PROTO = 5
+
+
+class Property:
+  """Property specified for an Artifact."""
+  _ALLOWED_MLMD_TYPES = {
+      PropertyType.INT: metadata_store_pb2.INT,
+      PropertyType.FLOAT: metadata_store_pb2.DOUBLE,
+      PropertyType.STRING: metadata_store_pb2.STRING,
+      PropertyType.JSON_VALUE: metadata_store_pb2.STRUCT,
+      PropertyType.PROTO: metadata_store_pb2.PROTO,
+  }
+
+  def __init__(self, type):  # pylint: disable=redefined-builtin
+    if type not in Property._ALLOWED_MLMD_TYPES:
+      raise ValueError('Property type must be one of %s.' %
+                       list(Property._ALLOWED_MLMD_TYPES.keys()))
+    # TODO(b/241861488): Remove safeguard once fully supported by MLMD.
+    if (type == PropertyType.PROTO and not _ENABLE_PROTO_PROPERTIES):
+      raise ValueError('Proto properties are not yet supported')
+    self.type = type
+
+  def mlmd_type(self):
+    return Property._ALLOWED_MLMD_TYPES[self.type]
+
+  def __repr__(self):
+    return str(self.type)
+
+
 JsonValueType = Union[Dict, List, int, float, type(None), str]
 _JSON_SINGLE_VALUE_KEY = '__value__'
+
+# Implicit properties that will be added to all artifacts.
+IMPLICIT_ARTIFACT_PROPERTIES = {}
 
 
 def _decode_struct_value(
@@ -85,6 +133,26 @@ def _encode_struct_value(value: JsonValueType) -> Optional[struct_pb2.Struct]:
   result = struct_pb2.Struct()
   json_format.ParseDict(value, result)
   return result
+
+
+def _add_implicit_artifact_properties(
+    artifact_type: metadata_store_pb2.ArtifactType) -> None:
+  """Adds implicit properties to an MLMD artifact type."""
+  for property_name, property_def in IMPLICIT_ARTIFACT_PROPERTIES.items():
+    if property_name in artifact_type.properties:
+      if artifact_type.properties[property_name] == property_def.mlmd_type():
+        # The implicit property exactly matches an existing property.
+        continue
+      raise AttributeError(
+          f'Artifact subclass {artifact_type.name} declares a property named '
+          f'"{property_name}" that conflicts with an implicit property with '
+          'the same name.')
+    if not (isinstance(property_name,
+                       (str, bytes)) and isinstance(property_def, Property)):
+      raise ValueError(
+          'IMPLICIT_ARTIFACT_PROPERTIES must only contain entries with keys'
+          ' of type string and values of type artifact.Property.')
+    artifact_type.properties[property_name] = property_def.mlmd_type()
 
 
 class Artifact(json_utils.Jsonable):
@@ -169,6 +237,7 @@ class Artifact(json_utils.Jsonable):
         raise ValueError(
             'The "mlmd_artifact_type" argument must be an instance of the '
             'proto message ml_metadata.proto.metadata_store_pb2.ArtifactType.')
+      _add_implicit_artifact_properties(mlmd_artifact_type)
     else:
       if mlmd_artifact_type:
         raise ValueError(
@@ -218,6 +287,9 @@ class Artifact(json_utils.Jsonable):
 
         for key, value in cls.PROPERTIES.items():
           artifact_type.properties[key] = value.mlmd_type()
+
+      # Add implicit properties to the MLMD artifact type.
+      _add_implicit_artifact_properties(artifact_type)
 
       # Populate ML Metadata artifact type field: `base_type`.
       type_annotation_cls = cls.TYPE_ANNOTATION
@@ -576,17 +648,6 @@ class Artifact(json_utils.Jsonable):
     """Set producer component of the artifact."""
     self._set_system_property('producer_component', producer_component)
 
-  @property
-  @doc_controls.do_not_doc_in_subclasses
-  def is_external(self) -> bool:
-    """Returns true if the artifact is external."""
-    return self.get_int_custom_property('is_external') == 1
-
-  @is_external.setter
-  def is_external(self, is_external: bool):
-    """Sets if the artifact is external."""
-    self.set_int_custom_property('is_external', is_external)
-
   # Custom property accessors.
   @doc_controls.do_not_doc_in_subclasses
   def set_string_custom_property(self, key: str, value: str):
@@ -612,7 +673,7 @@ class Artifact(json_utils.Jsonable):
   def set_proto_custom_property(self, key: str, value: message.Message):
     """Sets a custom property of proto type."""
     # TODO(b/241861488): Remove safeguard once fully supported by MLMD.
-    if not artifact_property.ENABLE_PROTO_PROPERTIES:
+    if not _ENABLE_PROTO_PROPERTIES:
       raise ValueError('Proto properties are not yet supported')
     self._cached_modifiable_custom_properties[key] = value
 
@@ -691,7 +752,7 @@ class Artifact(json_utils.Jsonable):
   @doc_controls.do_not_doc_inheritable
   def get_proto_custom_property(self, key: str) -> Optional[message.Message]:
     """Get a custom property of proto type."""
-    if not artifact_property.ENABLE_PROTO_PROPERTIES:
+    if not _ENABLE_PROTO_PROPERTIES:
       raise ValueError('Proto properties are not yet supported')
     if key in self._cached_modifiable_custom_properties:
       return self._cached_modifiable_custom_properties[key]
