@@ -39,7 +39,8 @@ def static_range(artifacts,
                  start_span_number: int = -1,
                  end_span_number: int = -1,
                  keep_all_versions: bool = False,
-                 exclude_span_numbers: Sequence[int] = ()):
+                 exclude_span_numbers: Sequence[int] = (),
+                 min_spans: int = 0):
   """Returns artifacts with spans in [start_span, end_span] inclusive.
 
   Artifacts are expected to have both a span and a version. If there are
@@ -87,9 +88,16 @@ def static_range(artifacts,
       If false then if multiple artifacts have the same span, only the span with
       the latest version is kept. Defaults to False.
     exclude_span_numbers: The span numbers to exclude.
+    min_spans: Minimum number of desired example spans in the range. If
+      min_spans < -1, it is set to the number of unique spans. If min_spans = 0,
+      it is set to end_span_number - start_span_number + 1.
 
   Returns:
     Artifacts with spans in [start_span, end_span] inclusive.
+
+  Raises:
+    SkipSignal if there are less than min_spans unique spans present in the
+    resolved artifacts.
   """
   resolved_artifacts = ops.StaticSpanRange(
       artifacts,
@@ -99,7 +107,11 @@ def static_range(artifacts,
   if exclude_span_numbers:
     resolved_artifacts = ops.ExcludeSpans(
         resolved_artifacts, denylist=exclude_span_numbers)
-  return resolved_artifacts
+
+  if min_spans == 0 and (start_span_number >= 0 and end_span_number >= 0):
+    min_spans = end_span_number - start_span_number + 1
+
+  return ops.SkipIfLessThanNSpans(resolved_artifacts, n=min_spans)
 
 
 @resolver_function.resolver_function
@@ -109,7 +121,8 @@ def rolling_range(artifacts,
                   num_spans: int = 1,
                   skip_num_recent_spans: int = 0,
                   keep_all_versions: bool = False,
-                  exclude_span_numbers: Sequence[int] = ()):
+                  exclude_span_numbers: Sequence[int] = (),
+                  min_spans: int = 0):
   """Returns artifacts with spans in a rolling range.
 
   First, spans < start_span_number are excluded, and then the spans are sorted.
@@ -171,9 +184,16 @@ def rolling_range(artifacts,
       If false then if multiple artifacts have the same span, only the span with
       the latest version is kept. Defaults to False.
     exclude_span_numbers: The span numbers to exclude.
+    min_spans: Minimum number of desired example spans in the range. If
+      min_spans < -1, it is set to the number of unique spans. If min_spans = 0,
+      it is set to num_spans.
 
   Returns:
     Artifacts with spans in the rolling range.
+
+  Raises:
+    SkipSignal if there are less than min_spans unique spans present in the
+    resolved artifacts.
   """
   resolved_artifacts = ops.LatestSpan(
       artifacts,
@@ -184,4 +204,7 @@ def rolling_range(artifacts,
   if exclude_span_numbers:
     resolved_artifacts = ops.ExcludeSpans(
         resolved_artifacts, denylist=exclude_span_numbers)
-  return resolved_artifacts
+
+  if min_spans == 0 and num_spans > 0:
+    min_spans = num_spans
+  return ops.SkipIfLessThanNSpans(resolved_artifacts, n=min_spans)
