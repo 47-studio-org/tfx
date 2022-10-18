@@ -16,6 +16,8 @@ with support for proto property values and this comment is subsequently removed.
    This placeholder can be used to generate beam_pipeline_args
    dynamically.
 
+*  Supports auto retry of failed executions.
+
 ## Breaking Changes
 
 ### For Pipeline Authors

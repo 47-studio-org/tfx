@@ -810,6 +810,48 @@ class SyncPipelineTaskGeneratorTest(test_utils.TfxTest, parameterized.TestCase):
     self._chore_b.execution_options.strategy = (
         pipeline_pb2.NodeExecutionOptions.TRIGGER_STRATEGY_UNSPECIFIED)
 
+  def test_component_retry(self):
+    """Tests component retry."""
+    test_utils.fake_example_gen_run(self._mlmd_connection, self._example_gen, 1,
+                                    1)
+    self._stats_gen.execution_options.max_num_of_execution_retry = 2
+    node_uid = task_lib.NodeUid.from_node(self._pipeline, self._stats_gen)
+    def _fail_node_execution(node):
+      [task] = self._generate(False, True, fail_fast=True)
+      self.assertEqual(node.node_info.id, task.node_uid.node_id)
+      # Simulate StatsGen failure.
+      with self._mlmd_connection as m:
+        with mlmd_state.mlmd_execution_atomic_op(
+            m, task.execution_id) as ev_exec:
+          # Fail stats-gen execution.
+          ev_exec.last_known_state = metadata_store_pb2.Execution.FAILED
+          data_types_utils.set_metadata_value(
+              ev_exec.custom_properties[constants.EXECUTION_ERROR_MSG_KEY],
+              'error')
+
+    _fail_node_execution(self._stats_gen)
+    for _ in range(
+        self._stats_gen.execution_options.max_num_of_execution_retry):
+      # It should generate a UpdateNodeStateTask(state=STARTING) due to retry.
+      [exec_node_task] = self._generate(False, False, fail_fast=True)
+      self.assertIsInstance(exec_node_task, task_lib.ExecNodeTask)
+
+      # Change state of node to STARTING.
+      with self._mlmd_connection as m:
+        pipeline_state = test_utils.get_or_create_pipeline_state(
+            m, self._pipeline)
+        with pipeline_state:
+          with pipeline_state.node_state_update_context(node_uid) as node_state:
+            node_state.update(pstate.NodeState.STARTING)
+
+      # Fail it again.
+      _fail_node_execution(self._stats_gen)
+
+    # Fail a pipeline if a failed node can't be retried anymore.
+    [finalize_task] = self._generate(False, True, fail_fast=True)
+    self.assertIsInstance(finalize_task, task_lib.FinalizePipelineTask)
+    self.assertEqual(status_lib.Code.ABORTED, finalize_task.status.code)
+
 
 if __name__ == '__main__':
   tf.test.main()
