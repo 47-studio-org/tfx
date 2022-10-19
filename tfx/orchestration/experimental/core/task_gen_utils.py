@@ -201,7 +201,7 @@ def generate_resolved_info(
   except exceptions.InputResolutionError as e:
     logging.warning('Input resolution error raised for node: %s; error: %s',
                     node.node_info.id, e)
-    return ResolvedInfo(contexts=contexts, input_and_params=[])
+    resolved_input_artifacts = None
   else:
     if isinstance(resolved_input_artifacts, inputs_utils.Skip):
       return None
@@ -210,15 +210,8 @@ def generate_resolved_info(
 
   if resolved_input_artifacts:
     for input_artifacts in resolved_input_artifacts:
-      try:
-        dynamic_exec_properties = inputs_utils.resolve_dynamic_parameters(
-            node_parameters=node.parameters, input_artifacts=input_artifacts)
-      except exceptions.InputResolutionError as e:
-        logging.warning(
-            'Input resolution error raised for node while '
-            'resolving dynamic parameters: %s; error: %s', node.node_info.id, e)
-        return ResolvedInfo(contexts=contexts, input_and_params=[])
-
+      dynamic_exec_properties = inputs_utils.resolve_dynamic_parameters(
+          node_parameters=node.parameters, input_artifacts=input_artifacts)
       if not dynamic_exec_properties:
         cur_exec_properties = exec_properties
       else:

@@ -70,6 +70,7 @@ class BaseNode(json_utils.Jsonable, abc.ABC):
     self._id = None
     # Internal use only. Can be mapped to KFP TriggerStrategy.
     self._trigger_strategy = None
+    self._success_optional = None
     dsl_context_registry.get().put_node(self)
 
   @doc_controls.do_not_doc_in_subclasses

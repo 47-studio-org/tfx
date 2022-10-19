@@ -305,8 +305,8 @@ class Compiler:
 
     # Step 8: Node execution options
     node.execution_options.caching_options.enable_cache = enable_cache
-    # TODO(b/211890056): Support non default triggering strategies with
-    # optional artifacts.
+    # TODO(b/211890056): Support non default triggering strategies and node
+    # success optionality with optional artifacts.
     if getattr(tfx_node, "_trigger_strategy", None):
       if not pipeline_ctx.is_sync_mode:
         raise ValueError("Node level triggering strategies are only used in "
@@ -315,6 +315,15 @@ class Compiler:
         raise NotImplementedError("Non default triggering strategies with "
                                   "data dependency are not yet supported yet.")
       node.execution_options.strategy = getattr(tfx_node, "_trigger_strategy")
+    if getattr(tfx_node, "_success_optional", None):
+      if not pipeline_ctx.is_sync_mode:
+        raise ValueError("Node level success optionality is only used in "
+                         "SYNC pipelines.")
+      if tfx_node.outputs:
+        raise NotImplementedError("Node level success optionality with "
+                                  "data dependency is not yet supported yet.")
+      node.execution_options.node_success_optional = getattr(
+          tfx_node, "_success_optional")
 
     # Step 9: Per-node platform config
     if isinstance(tfx_node, base_component.BaseComponent):
