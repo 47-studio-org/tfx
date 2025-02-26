@@ -25,6 +25,7 @@ from tfx.dsl.components.base import executor_spec
 from tfx.types import artifact
 from tfx.types import component_spec
 from tfx.types import system_executions
+from google.protobuf import message
 
 
 class ArgFormats(enum.Enum):
@@ -151,6 +152,24 @@ def assert_is_top_level_func(func: types.FunctionType) -> None:
     )
 
 
+def assert_no_private_func_in_main(func: types.FunctionType) -> None:
+  """Asserts the func is not a private function in the main file.
+
+
+  Args:
+    func: The function to be checked.
+
+  Raises:
+    ValueError if the func was defined in main and whose name starts with '_'.
+  """
+  if func.__module__ == '__main__' and func.__name__.startswith('_'):
+    raise ValueError(
+        'Custom Python functions (both @component and pre/post hooks) declared'
+        ' in the main file must be public. Please remove the leading'
+        f' underscore from {func.__name__}.'
+    )
+
+
 def _create_component_spec_class(
     func: types.FunctionType,
     arg_defaults: Dict[str, Any],
@@ -206,10 +225,17 @@ def _create_component_spec_class(
             json_compatible_outputs[key],
         )
   if parameters:
-    for key, primitive_type in parameters.items():
-      spec_parameters[key] = component_spec.ExecutionParameter(
-          type=primitive_type, optional=(key in arg_defaults)
-      )
+    for key, param_type in parameters.items():
+      if inspect.isclass(param_type) and issubclass(
+          param_type, message.Message
+      ):
+        spec_parameters[key] = component_spec.ExecutionParameter(
+            type=param_type, optional=(key in arg_defaults), use_proto=True
+        )
+      else:
+        spec_parameters[key] = component_spec.ExecutionParameter(
+            type=param_type, optional=(key in arg_defaults)
+        )
   component_spec_class = type(
       '%s_Spec' % func.__name__,
       (tfx_types.ComponentSpec,),
@@ -231,7 +257,6 @@ def _create_executor_spec_instance(
     arg_defaults: Dict[str, Any],
     return_values_optionality: Optional[Dict[str, bool]] = None,
     json_compatible_outputs: Optional[Dict[str, Any]] = None,
-    ingress_previous_execution_limit: Optional[int] = None,
 ) -> executor_spec.ExecutorClassSpec:
   """Creates the executor spec instance for the func-generated component.
 
@@ -249,41 +274,34 @@ def _create_executor_spec_instance(
     json_compatible_outputs: A dict from output names that have json compatible
       types to their typehints. Json compatibility is determined by
       `tfx.dsl.component.experimental.json_compat.is_json_compatible`.
-    ingress_previous_execution_limit: Maximum number of latest previous
-      executions used by ingress python component, only applies to ingress
-      python component.
 
   Returns:
     an instance of `executor_spec_class` whose executor_class is a subclass of
     `base_executor_class`.
   """
-  executor_class_attribute_dict = {
-      '_ARG_FORMATS': arg_formats,
-      '_ARG_DEFAULTS': arg_defaults,
-      # The function needs to be marked with `staticmethod` so that later
-      # references of `self._FUNCTION` do not result in a bound method (i.e.
-      # one with `self` as its first parameter).
-      '_FUNCTION': staticmethod(func),  # pytype: disable=not-callable
-      '_RETURNED_VALUES': return_values_optionality,
-      '_RETURN_JSON_COMPAT_TYPEHINT': json_compatible_outputs,
-      '__module__': func.__module__,
-  }
-
-  if ingress_previous_execution_limit:
-    executor_class_attribute_dict['_INGRESS_PREVIOUS_EXECUTION_LIMIT'] = (
-        ingress_previous_execution_limit
-    )
+  assert_no_private_func_in_main(func)
+  executor_class_name = f'{func.__name__}_Executor'
   executor_class = type(
-      '%s_Executor' % func.__name__,
+      executor_class_name,
       (base_executor_class,),
-      executor_class_attribute_dict,
+      {
+          '_ARG_FORMATS': arg_formats,
+          '_ARG_DEFAULTS': arg_defaults,
+          # The function needs to be marked with `staticmethod` so that later
+          # references of `self._FUNCTION` do not result in a bound method (i.e.
+          # one with `self` as its first parameter).
+          '_FUNCTION': staticmethod(func),  # pytype: disable=not-callable
+          '_RETURNED_VALUES': return_values_optionality,
+          '_RETURN_JSON_COMPAT_TYPEHINT': json_compatible_outputs,
+          '__module__': func.__module__,
+      },
   )
   # Expose the generated executor class in the same module as the decorated
   # function. This is needed so that the executor class can be accessed at the
   # proper module path. One place this is needed is in the Dill pickler used by
   # Apache Beam serialization.
   module = sys.modules[func.__module__]
-  setattr(module, '%s_Executor' % func.__name__, executor_class)
+  setattr(module, executor_class_name, executor_class)
 
   executor_spec_instance = executor_spec_class(executor_class=executor_class)
   return executor_spec_instance
@@ -303,7 +321,6 @@ def create_component_class(
     json_compatible_inputs: Optional[Dict[str, Any]] = None,
     json_compatible_outputs: Optional[Dict[str, Any]] = None,
     return_values_optionality: Optional[Dict[str, bool]] = None,
-    ingress_previous_execution_limit: Optional[int] = None,
 ) -> Type[base_component.BaseComponent]:
   """Creates the component class for the func-generated component.
 
@@ -330,9 +347,6 @@ def create_component_class(
       `tfx.dsl.component.experimental.json_compat.is_json_compatible`.
     return_values_optionality: A dict from output names that are primitive type
       values returned from the user function to whether they are `Optional`.
-    ingress_previous_execution_limit: maximum number of latest previous
-      executions used by ingress python component, only applies to ingress
-      python component.
 
   Returns:
     a subclass of `base_component_class`.
@@ -357,7 +371,6 @@ def create_component_class(
       arg_defaults,
       return_values_optionality,
       json_compatible_outputs,
-      ingress_previous_execution_limit=ingress_previous_execution_limit,
   )
 
   return type(

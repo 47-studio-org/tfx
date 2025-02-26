@@ -16,6 +16,160 @@
 
 ## Documentation Updates
 
+# Version 1.16.0
+
+## Major Features and Improvements
+
+*   N/A
+
+## Breaking Changes
+
+*  `Placeholder.__format__()` is now disallowed, so you cannot use placeholders
+   in f-strings and `str.format()` calls anymore. If you get an error from this,
+   most likely you discovered a bug and should not use an f-string in the first
+   place. If it is truly your intention to print the placeholder (not its
+   resolved value) for debugging purposes, use `repr()` or `!r` instead.
+* Drop supports for the Estimator API.
+
+### For Pipeline Authors
+
+*   N/A
+
+### For Component Authors
+
+*   N/A
+
+## Deprecations
+
+*   KubeflowDagRunner (KFP v1 SDK) is deprecated. Use KubeflowV2DagRunner (KFP v2 pipeline spec) instead.
+*   Since Estimators will no longer be available in TensorFlow 2.16 and later versions, we have deprecated examples and templates that use them. We encourage you to explore Keras as a more modern and flexible high-level API for building and training models in TensorFlow.
+
+## Bug Fixes and Other Changes
+
+*   N/A
+
+## Dependency Updates
+| Package Name | Version Constraints | Previously (in `v1.15.1`) | Comments |
+| -- | -- | -- | -- |
+| `docker` | `>=7,<8` | `>=4.1,<5` | |
+
+## Documentation Updates
+
+*   N/A
+
+# Version 1.15.1
+
+## Major Features and Improvements
+
+## Breaking Changes
+
+*  Support KFP pipeline spec 2.1.0 version schema and YAML files with KFP v2 DAG runner
+
+### For Pipeline Authors
+
+### For Component Authors
+
+## Deprecations
+
+## Bug Fixes and Other Changes
+
+## Dependency Updates
+| Package Name | Version Constraints | Previously (in `v1.15.0`) | Comments |
+| -- | -- | -- | -- |
+| `kfp-pipeline-spec` | `>0.1.13,<0.2` | `>=0.1.10,<0.2` | |
+
+## Documentation Updates
+
+# Version 1.15.0
+
+## Major Features and Improvements
+
+*  Dropped python 3.8 support.
+*  Dropped experimental TFX Centralized Kubernetes Orchestrator
+*  Extend GetPipelineRunExecutions, GetPipelineRunArtifacts APIs to support
+   filtering by execution create_time, type.
+*  ExampleValidator and DistributionValidator now support anomalies alert
+   generation. Users can use their own toolkits to extract and process the
+   alerts from the execution parameter.
+*  Allow DistributionValidator baseStatistics input channel artifacts to be
+   empty for cold start of data validation.
+*  `ph.make_proto()` allows constructing proto-valued placeholders, e.g. for
+   larger config protos fed to a component.
+*  `ph.join_path()` is like `os.path.join()` but for placeholders.
+*  Support passing in `experimental_debug_stripper` into the Transform
+   pipeline runner.
+
+## Breaking Changes
+
+*   `Placeholder` and all subclasses have been moved to other modules, their
+    structure has been changed and they're now immutable. Most users won't care
+    (the main public-facing API is unchanged and behaves the same way). If you
+    do special operations like `isinstance()` or some kind of custom
+    serialization on placeholders, you will have to update your code.
+*   `placeholder.Placeholder.traverse()` now returns more items than before,
+    namely also placeholder operators like `_ConcatOperator` (which is the
+    implementation of Python's `+` operator).
+*   The `placeholder.RuntimeInfoKey` enumeration was removed. Just hard-code the
+    appropriate string values in your code, and reference the new `Literal` type
+    `placeholder.RuntimeInfoKeys` if you want to ensure correctness.
+*   Arguments to `@component` must now be passed as kwargs and its return type
+    is changed from being a `Type` to just being a callable that returns a new
+    instance (like the type's initializer). This will allow us to instead return
+    a factory function (which is not a `Type`) in future. For a given
+    `@component def C()`, this means:
+    *   You should not use `C` as a type anymore. For instance, replace
+        `isinstance(foo, C)` with something else. Depending on your use case, if
+        you just want to know whether it's a component, then use
+        `isinstance(foo, tfx.types.BaseComponent)` or
+        `isinstance(foo, tfx.types.BaseFunctionalComponent)`.
+        If you want to know _which_ component it is, check its `.id` instead.
+        Existing such checks will break type checking today and may additionally
+        break at runtime in future, if we migrate to a factory function.
+    *   You can continue to use `C.test_call()` like before, and it will
+        continue to be supported in future.
+    *   Any type declarations using `foo: C` break and must be replaced with
+        `foo: tfx.types.BaseComponent` or
+        `foo: tfx.types.BaseFunctionalComponent`.
+    *   Any references to static class members like `C.EXECUTOR_SPEC` breaks
+        type checking today and should be migrated away from. In particular, for
+        `.EXECUTOR_SPEC.executor_class().Do()` in unit tests, use `.test_call()`
+        instead.
+    *   If your code previously asserted a wrong type declaration on `C`, this
+        can now lead to (justified) type checking errors that were previously
+        hidden due to `C` being of type `Any`.
+*   `ph.to_list()` was renamed to `ph.make_list()` for consistency.
+
+
+### For Pipeline Authors
+
+### For Component Authors
+
+## Deprecations
+
+*   Deprecated python 3.8
+
+## Bug Fixes and Other Changes
+
+* Fixed a synchronization bug in google_cloud_ai_platform tuner.
+* Print best tuning trials only from the chief worker of google_cloud_ai_platform tuner.
+* Add a kpf dependency in the docker-image extra packages.
+* Fix BigQueryExampleGen failure without custom_config.
+
+## Dependency Updates
+| Package Name | Version Constraints | Previously (in `v1.14.0`) | Comments |
+| -- | -- | -- | -- |
+| `keras-tuner` | `>=1.0.4,<2` | `>=1.0.4,<2,!=1.4.0,!=1.4.1` | |
+| `packaging` | `>=22` | `>=20,<21` | |
+| `attrs` | `19.3.0,<24` | `19.3.0,<22` | |
+| `google-cloud-bigquery` | `>=3,<4` | `>=2.26.0,<3` | |
+| `tensorflow` | `>=2.13,<2.14` | `>=2.15,<2.16` | |
+| `tensorflow-decision-forests` | `>=1.0.1,<2` | `>=1.0.1,<1.9` | |
+| `tensorflow-hub` | `>=0.15.0,<0.16` | `>=0.9.0,<0.14` | |
+| `tensorflow-serving` | `>=2.15,<2.16` | `>=1.15,!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,!=2.5.*,!=2.6.*,!=2.7.*,!=2.8.*,<3` | |
+| `kfp-pipeline-spec` | `>0.1.13,<0.2` | `>=0.1.10,<0.2` | |
+
+## Documentation Updates
+
 # Version 1.14.0
 
 ## Major Features and Improvements
@@ -102,7 +256,7 @@
 
 ## Bug Fixes and Other Changes
 
-*  Support to task type "workerpool1" of CLUSTER_SPEC in Vertex AI training's 
+*  Support to task type "workerpool1" of CLUSTER_SPEC in Vertex AI training's
    service according to the changes of task type in Tuner component.
 *  Propagates unexpected import failures in the public v1 module.
 
